@@ -1,10 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 const cheerio = require('cheerio');
+const { BookRecordSchema } = require('./schema');
 
 const USER_AGENT = 'FlyRankInternshipA9/1.0 (+https://github.com/MemreYigit/The-polite-scraper)';
 const CATALOGUE_URL = 'https://books.toscrape.com/catalogue/page-1.html';
 const CACHE_DIR = path.join(__dirname, '..', '..', 'cache');
+const OUTPUT_DIR = path.join(__dirname, '..', '..', 'output');
+const BOOKS_FILE = path.join(OUTPUT_DIR, 'books.json');
+const ERRORS_FILE = path.join(OUTPUT_DIR, 'errors.json');
 
 // Generate a cache file path for a given page number
 function cacheFileForPage(pageNumber) {
@@ -84,6 +88,8 @@ function extractBookRecord(html, detailUrl, sourcePage) {
 
     const title = productMain.find('h1').text().trim();
     const priceText = productMain.find('.price_color').text().trim();
+    // Strip everything except digits and the decimal point (drops the "£"), then parse the number.
+    const priceGbp = parseFloat(priceText.replace(/[^0-9.]/g, ''));
     const availabilityText = productMain.find('.availability').text().trim();
 
     const ratingClasses = productMain.find('.star-rating').attr('class').split(' ');
@@ -96,12 +102,35 @@ function extractBookRecord(html, detailUrl, sourcePage) {
         title,
         product_url: detailUrl,
         price_text: priceText,
+        price_gbp: priceGbp,
         availability_text: availabilityText,
         rating_text: ratingText,
         description,
         source_page: sourcePage,
         fetched_at: new Date().toISOString()
     };
+}
+
+// Split records into ones that match BookRecordSchema and ones that don't, with a reason for each failure
+function validateRecords(records) {
+    const validRecords = [];
+    const errors = [];
+
+    for (const record of records) {
+        const result = BookRecordSchema.safeParse(record);
+
+        if (result.success) {
+            validRecords.push(result.data);
+        } 
+        else {
+            const reason = result.error.issues
+                .map(issue => `${issue.path.join('.')}: ${issue.message}`)
+                .join('; ');
+            errors.push({ record, reason });
+        }
+    }
+
+    return { validRecords, errors };
 }
 
 // Get all book links from the catalogue, handling pagination and caching.
@@ -144,8 +173,14 @@ async function extractRawRecords() {
         records.push(record);
     }
 
+    const { validRecords, errors } = validateRecords(records);
+
+    fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    fs.writeFileSync(BOOKS_FILE, JSON.stringify(validRecords, null, 2));
+    fs.writeFileSync(ERRORS_FILE, JSON.stringify(errors, null, 2));
+
     console.log('--- Sample record ---');
-    console.log(records[0]);
+    console.log(validRecords[0]);
     console.log(`detail_pages=${records.length}`);
 }
 
