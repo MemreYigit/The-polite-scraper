@@ -11,6 +11,13 @@ function cacheFileForPage(pageNumber) {
     return path.join(CACHE_DIR, `catalogue_page_${pageNumber}.html`);
 }
 
+// Generate a cache file path for a given book detail page URL
+function cacheFileForBook(url) {
+    const segments = new URL(url).pathname.split('/').filter(Boolean);
+    const slug = segments[segments.length - 2];
+    return path.join(CACHE_DIR, `book_${slug}.html`);
+}
+
 // Sleep for a given number of milliseconds
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -70,27 +77,76 @@ function findNextPageUrl(html, pageUrl) {
     return new URL(nextHref, pageUrl).href;
 }
 
-// Main function to scrape multiple pages of the catalogue
-async function main() {
-    const allLinks = [];
+// Extract a raw record from a book detail page's HTML
+function extractBookRecord(html, detailUrl, sourcePage) {
+    const $ = cheerio.load(html);
+    const productMain = $('.product_main'); 
+
+    const title = productMain.find('h1').text().trim();
+    const priceText = productMain.find('.price_color').text().trim();
+    const availabilityText = productMain.find('.availability').text().trim();
+
+    const ratingClasses = productMain.find('.star-rating').attr('class').split(' ');
+    const ratingText = ratingClasses.find(cls => ['One', 'Two', 'Three', 'Four', 'Five'].includes(cls)) || null;
+
+    const descriptionEl = $('#product_description + p');
+    const description = descriptionEl.length ? descriptionEl.text().trim() : null;
+
+    return {
+        title,
+        product_url: detailUrl,
+        price_text: priceText,
+        availability_text: availabilityText,
+        rating_text: ratingText,
+        description,
+        source_page: sourcePage,
+        fetched_at: new Date().toISOString()
+    };
+}
+
+// Get all book links from the catalogue, handling pagination and caching.
+async function getAllBookLinks() {
+    const linkToSourcePage = new Map();
     let pageUrl = CATALOGUE_URL;
     let pageNumber = 1;
     const MAX_PAGES = 3;
+    let discoveredCount = 0;
 
     while (pageUrl && pageNumber <= MAX_PAGES) {
         const html = await fetchPage(pageUrl, cacheFileForPage(pageNumber));
         const links = extractBookLinks(html, pageUrl);
-        allLinks.push(...links);
+
+        for (const link of links) {
+            discoveredCount++;
+            linkToSourcePage.set(link, pageUrl);
+        }
+
         pageUrl = findNextPageUrl(html, pageUrl);
         pageNumber++;
     }
 
-    const uniqueLinks = new Set(allLinks);
-
-    console.log('Scraping completed.');
+    console.log('Catalogue scan completed.');
     console.log(`catalogue_pages=${pageNumber - 1}`);
-    console.log(`discovered=${allLinks.length}`);
-    console.log(`unique_urls=${uniqueLinks.size}`);
+    console.log(`discovered=${discoveredCount}`);
+    console.log(`unique_urls=${linkToSourcePage.size}`);
+
+    return linkToSourcePage;
 }
 
-main();
+// Fetch, cache, and extract a raw record for every discovered book page
+async function extractRawRecords() {
+    const linkToSourcePage = await getAllBookLinks();
+    const records = [];
+
+    for (const [bookUrl, sourcePage] of linkToSourcePage) {
+        const html = await fetchPage(bookUrl, cacheFileForBook(bookUrl));
+        const record = extractBookRecord(html, bookUrl, sourcePage);
+        records.push(record);
+    }
+
+    console.log('--- Sample record ---');
+    console.log(records[0]);
+    console.log(`detail_pages=${records.length}`);
+}
+
+extractRawRecords()
